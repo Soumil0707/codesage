@@ -1,0 +1,105 @@
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: codesage-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-codesage_root_2024}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-codesage}
+      MYSQL_USER: ${MYSQL_USER:-codesage_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-codesage_pass_2024}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --innodb-buffer-pool-size=256M
+      --max-allowed-packet=64M
+      --ft-min-word-len=2
+      --innodb-ft-min-token-size=2
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-codesage_root_2024}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: codesage-backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=mysql+aiomysql://${MYSQL_USER:-codesage_user}:${MYSQL_PASSWORD:-codesage_pass_2024}@mysql:3306/${MYSQL_DATABASE:-codesage}
+      - DATABASE_URL_SYNC=mysql+pymysql://${MYSQL_USER:-codesage_user}:${MYSQL_PASSWORD:-codesage_pass_2024}@mysql:3306/${MYSQL_DATABASE:-codesage}
+      - SECRET_KEY=${SECRET_KEY:-super-secret-key-change-in-production-2024}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_BASE=${LLM_API_BASE:-https://api.openai.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+      - UPLOAD_MAX_SIZE_MB=${UPLOAD_MAX_SIZE_MB:-100}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - upload_data:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: codesage-worker
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=mysql+aiomysql://${MYSQL_USER:-codesage_user}:${MYSQL_PASSWORD:-codesage_pass_2024}@mysql:3306/${MYSQL_DATABASE:-codesage}
+      - DATABASE_URL_SYNC=mysql+pymysql://${MYSQL_USER:-codesage_user}:${MYSQL_PASSWORD:-codesage_pass_2024}@mysql:3306/${MYSQL_DATABASE:-codesage}
+      - SECRET_KEY=${SECRET_KEY:-super-secret-key-change-in-production-2024}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_BASE=${LLM_API_BASE:-https://api.openai.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+    volumes:
+      - ./backend:/app
+      - upload_data:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    command: python -m app.workers.runner
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: codesage-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npx vite --host 0.0.0.0
+
+volumes:
+  mysql_data:
+  upload_data:
